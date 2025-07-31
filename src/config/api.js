@@ -74,11 +74,30 @@ export const apiRequest = async (endpoint, options = {}) => {
 export const API_ENDPOINTS = {
   // Connection endpoints
   connection: {
-    status: (tenantId) => `/api/connection/status/${tenantId}`,
-    create: () => "/api/connection/create",
-    disconnect: (tenantId) => `/api/connection/disconnect/${tenantId}`,
-    list: (tenantId) => `/api/connections?tenantId=${tenantId}`,
+    /**
+     * Cria uma nova conexão WhatsApp
+     * POST /api/connect
+     */
+    create: () => "/api/connect",
+
+    /**
+     * Verifica o status de uma sessão específica
+     * GET /api/connection/:sessionId/status
+     */
+    status: (sessionId) => `/api/connection/${sessionId}/status`,
+
+    /**
+     * Desconecta ou exclui uma sessão
+     * DELETE /api/connection/:sessionId
+     */
+    disconnect: (sessionId) => `/api/connection/${sessionId}`,
     delete: (sessionId) => `/api/connection/${sessionId}`,
+
+    /**
+     * Lista todas as conexões do tenant identificado pela API Key
+     * GET /api/connections
+     */
+    list: () => "/api/connections",
   },
 
   // Webhook endpoints

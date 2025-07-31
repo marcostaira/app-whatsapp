@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { api, API_ENDPOINTS } from "../config/api";
 
+// A listagem de conexões agora é baseada apenas na API Key enviada nos headers
+// O tenantId é mantido para compatibilidade, mas não é mais usado nas chamadas
 const ConnectionsList = ({ tenantId, onConnectionSelect }) => {
   const [connections, setConnections] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -19,7 +21,9 @@ const ConnectionsList = ({ tenantId, onConnectionSelect }) => {
   const loadConnections = async () => {
     try {
       setError("");
-      const data = await api.get(API_ENDPOINTS.connection.list(tenantId));
+      // O endpoint de listagem não precisa mais do tenantId, pois o backend
+      // identifica o tenant através da API Key enviada nos headers
+      const data = await api.get(API_ENDPOINTS.connection.list());
       setConnections(data || []);
     } catch (err) {
       setError("Erro ao carregar conexões: " + err.message);

@@ -1,7 +1,5 @@
 import React, { useState, useEffect } from "react";
-
-// Configuração da base URL da API
-const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:3000";
+import { API_BASE_URL, api, API_ENDPOINTS } from "../config/api";
 
 const ConnectionManager = ({
   tenantId,
@@ -90,25 +88,14 @@ const ConnectionManager = ({
 
     try {
       // Usar o endpoint correto da API: GET /api/connections
-      // A API usa middleware que identifica o tenant pela API Key automaticamente
-      const url = `${API_BASE_URL}/api/connections`;
-      console.log("📡 Fazendo requisição para:", url);
+      // A API identifica o tenant pela API Key enviada nos headers
+      const endpoint = API_ENDPOINTS.connection.list();
+      console.log("📡 Fazendo requisição para:", `${API_BASE_URL}${endpoint}`);
       console.log("📡 Headers:", getRequestHeaders());
 
-      const response = await fetch(url, {
+      const result = await api.get(endpoint, {
         headers: getRequestHeaders(),
       });
-
-      console.log("📡 Resposta HTTP:", response.status, response.statusText);
-
-      if (!response.ok) {
-        const errorText = await response
-          .text()
-          .catch(() => "Erro desconhecido");
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      const result = await response.json();
       console.log("📋 Resposta de conexões:", result);
 
       // A API retorna { success: true, data: [...] }
@@ -165,21 +152,12 @@ const ConnectionManager = ({
 
     try {
       // Usar o endpoint correto: GET /api/connection/:sessionId/status
-      const url = `${API_BASE_URL}/api/connection/${sessionId}/status`;
+      const endpoint = API_ENDPOINTS.connection.status(sessionId);
       console.log("📡 Verificando status da sessão:", sessionId);
 
-      const response = await fetch(url, {
+      const result = await api.get(endpoint, {
         headers: getRequestHeaders(),
       });
-
-      if (!response.ok) {
-        const errorText = await response
-          .text()
-          .catch(() => "Erro desconhecido");
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      const result = await response.json();
       console.log("📋 Status da sessão:", result);
 
       // A API retorna { success: true, data: { isConnected, qrCode, pairingCode } }
@@ -218,20 +196,17 @@ const ConnectionManager = ({
   const getSessionProfile = async (sessionId) => {
     try {
       // Buscar novamente as conexões para obter dados do perfil
-      const response = await fetch(`${API_BASE_URL}/api/connections`, {
+      const endpoint = API_ENDPOINTS.connection.list();
+      const result = await api.get(endpoint, {
         headers: getRequestHeaders(),
       });
+      const connections = result.data || [];
+      const connection = connections.find(
+        (conn) => conn.sessionId === sessionId
+      );
 
-      if (response.ok) {
-        const result = await response.json();
-        const connections = result.data || [];
-        const connection = connections.find(
-          (conn) => conn.sessionId === sessionId
-        );
-
-        if (connection && connection.profileData) {
-          setSessionInfo(connection.profileData);
-        }
+      if (connection && connection.profileData) {
+        setSessionInfo(connection.profileData);
       }
     } catch (err) {
       console.error("❌ Erro ao obter perfil da sessão:", err);
@@ -258,26 +233,13 @@ const ConnectionManager = ({
       // Não enviamos tenantId no payload - a API identifica pelo middleware da API Key
 
       console.log("🚀 Criando conexão com payload:", payload);
-      console.log("🚀 URL:", `${API_BASE_URL}/api/connect`);
+      const endpoint = API_ENDPOINTS.connection.create();
+      console.log("🚀 URL:", `${API_BASE_URL}${endpoint}`);
 
       // Usar o endpoint correto: POST /api/connect
-      const response = await fetch(`${API_BASE_URL}/api/connect`, {
-        method: "POST",
+      const result = await api.post(endpoint, payload, {
         headers: getRequestHeaders(),
-        body: JSON.stringify(payload),
       });
-
-      console.log("🚀 Resposta HTTP:", response.status, response.statusText);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error("❌ Erro na resposta:", errorData);
-        throw new Error(
-          errorData.error || `HTTP ${response.status}: ${response.statusText}`
-        );
-      }
-
-      const result = await response.json();
       console.log("✅ Resposta da conexão:", result);
 
       // A API retorna { success: true, data: { sessionId, qrCode?, pairingCode? } }
@@ -326,20 +288,8 @@ const ConnectionManager = ({
       console.log("🔌 Desconectando sessão:", sessionId);
 
       // Usar o endpoint correto: DELETE /api/connection/:sessionId
-      const response = await fetch(
-        `${API_BASE_URL}/api/connection/${sessionId}`,
-        {
-          method: "DELETE",
-          headers: getRequestHeaders(),
-        }
-      );
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorData.error || `HTTP ${response.status}: ${response.statusText}`
-        );
-      }
+      const endpoint = API_ENDPOINTS.connection.disconnect(sessionId);
+      await api.delete(endpoint, { headers: getRequestHeaders() });
 
       // Limpar estado local
       setConnectionStatus("disconnected");
@@ -370,18 +320,8 @@ const ConnectionManager = ({
       console.log("🗑️ Excluindo sessão:", sessionId);
 
       // Usar o endpoint correto: DELETE /api/connection/:sessionId
-      const deleteResponse = await fetch(
-        `${API_BASE_URL}/api/connection/${sessionId}`,
-        {
-          method: "DELETE",
-          headers: getRequestHeaders(),
-        }
-      );
-
-      if (!deleteResponse.ok) {
-        const errorData = await deleteResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || "Falha ao excluir conexão");
-      }
+      const endpoint = API_ENDPOINTS.connection.delete(sessionId);
+      await api.delete(endpoint, { headers: getRequestHeaders() });
 
       // Limpar estado local
       setConnectionStatus("disconnected");
