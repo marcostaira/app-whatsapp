@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { apiService } from "../services/apiService";
+import ConnectionManager from "./ConnectionManager"; // ✅ IMPORTAR O CONNECTION MANAGER
 
 const TenantSetup = ({ onTenantSelected }) => {
   const [tenants, setTenants] = useState([]);
+  const [selectedTenant, setSelectedTenant] = useState(null); // ✅ ESTADO PARA TENANT SELECIONADO
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
@@ -19,11 +21,18 @@ const TenantSetup = ({ onTenantSelected }) => {
   const loadTenants = async () => {
     try {
       setIsLoading(true);
+      console.log("🔍 DEBUG - Carregando tenants...");
+
       const response = await apiService.getTenants();
+      console.log("🔍 DEBUG - Resposta da API:", response);
+
       const tenantsData = Array.isArray(response.data) ? response.data : [];
+      console.log("🔍 DEBUG - Tenants processados:", tenantsData);
+      console.log("🔍 DEBUG - Primeiro tenant:", tenantsData[0]);
+
       setTenants(tenantsData);
     } catch (error) {
-      console.error("Erro ao carregar tenants:", error);
+      console.error("❌ Erro ao carregar tenants:", error);
       setTenants([]); // Garantir array vazio em caso de erro
     } finally {
       setIsLoading(false);
@@ -56,8 +65,8 @@ const TenantSetup = ({ onTenantSelected }) => {
           webhookUrl: "",
         });
 
-        // Auto-selecionar o tenant criado
-        onTenantSelected(newTenant);
+        // ✅ SELECIONAR O TENANT CRIADO AUTOMATICAMENTE
+        handleSelectTenant(newTenant);
       }
     } catch (error) {
       alert("Erro ao criar tenant: " + error.message);
@@ -67,7 +76,28 @@ const TenantSetup = ({ onTenantSelected }) => {
   };
 
   const handleSelectTenant = (tenant) => {
-    onTenantSelected(tenant);
+    console.log("🔍 DEBUG - handleSelectTenant chamado");
+    console.log("  tenant recebido:", tenant);
+    console.log("  tenant.id:", tenant?.id);
+    console.log("  tenant.apiKey:", tenant?.apiKey);
+    console.log("  typeof tenant:", typeof tenant);
+    console.log("  tenant completo:", JSON.stringify(tenant, null, 2));
+
+    setSelectedTenant(tenant); // ✅ DEFINIR TENANT SELECIONADO
+
+    // Manter callback original se necessário
+    if (onTenantSelected) {
+      onTenantSelected(tenant);
+    }
+  };
+
+  const handleBackToSelection = () => {
+    setSelectedTenant(null); // ✅ VOLTAR PARA SELEÇÃO
+  };
+
+  const handleConnectionChange = (status) => {
+    console.log("🔗 Status da conexão mudou:", status);
+    // Aqui você pode adicionar lógica adicional se necessário
   };
 
   const handleInputChange = (e) => {
@@ -78,6 +108,80 @@ const TenantSetup = ({ onTenantSelected }) => {
     }));
   };
 
+  // ✅ SE TENANT SELECIONADO, MOSTRAR CONNECTION MANAGER
+  if (selectedTenant) {
+    console.log("🔍 DEBUG - Renderizando ConnectionManager");
+    console.log("  selectedTenant:", selectedTenant);
+    console.log("  selectedTenant.id:", selectedTenant.id);
+    console.log("  selectedTenant.apiKey:", selectedTenant.apiKey);
+
+    return (
+      <div className="min-h-screen bg-gray-50">
+        {/* Header com informações do tenant selecionado */}
+        <div className="bg-white shadow-sm border-b border-gray-200">
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">
+                  WhatsApp API - {selectedTenant.name || "Nome não encontrado"}
+                </h1>
+                <p className="text-sm text-gray-500 font-mono">
+                  Tenant ID: {selectedTenant.id || "ID não encontrado"}
+                </p>
+                <p className="text-xs text-gray-400">
+                  API Key: {selectedTenant.apiKey ? "Presente" : "Ausente"}
+                </p>
+              </div>
+              <button
+                onClick={handleBackToSelection}
+                className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+              >
+                ← Voltar para Seleção
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* ✅ DEBUG: Mostrar props que serão passadas */}
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+            <h3 className="font-medium text-yellow-800 mb-2">
+              🔍 Props sendo passadas para ConnectionManager:
+            </h3>
+            <div className="text-sm text-yellow-700 space-y-1">
+              <p>
+                tenantId:{" "}
+                <span className="font-mono">
+                  {selectedTenant.id || "undefined"}
+                </span>
+              </p>
+              <p>
+                apiKey:{" "}
+                <span className="font-mono">
+                  {selectedTenant.apiKey || "undefined"}
+                </span>
+              </p>
+              <p>
+                selectedTenant completo:{" "}
+                <pre className="text-xs mt-2 bg-yellow-100 p-2 rounded">
+                  {JSON.stringify(selectedTenant, null, 2)}
+                </pre>
+              </p>
+            </div>
+          </div>
+
+          {/* ✅ AQUI ESTÁ O CONNECTION MANAGER COM TENANT ID CORRETO */}
+          <ConnectionManager
+            tenantId={selectedTenant.id} // ✅ PASSANDO O TENANT ID
+            apiKey={selectedTenant.apiKey} // ✅ PASSANDO A API KEY DO TENANT
+            onConnectionChange={handleConnectionChange}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ✅ TELA DE SELEÇÃO DE TENANT (código original)
   return (
     <div className="bg-white rounded-xl shadow-lg p-8 max-w-4xl w-full">
       {/* Header */}
@@ -173,6 +277,18 @@ const TenantSetup = ({ onTenantSelected }) => {
                           </span>
                         </div>
                       )}
+
+                      {/* ✅ MOSTRAR API KEY STATUS */}
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-medium text-gray-600">
+                          API Key:
+                        </span>
+                        <span className="text-sm text-blue-600">
+                          {tenant.apiKey
+                            ? "🔑 Configurada"
+                            : "⚠️ Não configurada"}
+                        </span>
+                      </div>
                     </div>
 
                     <button className="w-full bg-green-500 hover:bg-green-600 text-white font-medium py-2 px-4 rounded-lg transition-colors">

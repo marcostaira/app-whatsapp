@@ -1,585 +1,818 @@
 import React, { useState, useEffect } from "react";
-import { apiService } from "../services/apiService";
-import { webhookService } from "../services/webhookService";
-import WebhookManager from "./WebhookManager";
+
+// Configuração da base URL da API
+const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:3000";
 
 const ConnectionManager = ({
-  tenant,
-  connections,
-  activeConnection,
-  onConnectionCreated,
-  onConnectionSelected,
-  onStatusUpdate,
+  tenantId,
+  apiKey: propApiKey,
+  onConnectionChange,
 }) => {
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [isCreating, setIsCreating] = useState(false);
-  const [connectionData, setConnectionData] = useState({
-    usePairingCode: false,
-    phoneNumber: "",
-  });
-  const [qrCode, setQrCode] = useState(null);
-  const [pairingCode, setPairingCode] = useState(null);
-  const [statusPolling, setStatusPolling] = useState({});
-  const [showWebhookConfig, setShowWebhookConfig] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState("disconnected");
+  const [qrCode, setQrCode] = useState("");
+  const [pairingCode, setPairingCode] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [sessionInfo, setSessionInfo] = useState(null);
+  const [sessionId, setSessionId] = useState(null); // Novo: armazenar sessionId
+  const [usePhoneNumber, setUsePhoneNumber] = useState(false);
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Novo: estado local para API Key se não foi passada como prop
+  const [localApiKey, setLocalApiKey] = useState(propApiKey || "");
+
+  // Usar API Key da prop ou do estado local
+  const apiKey = propApiKey || localApiKey;
+
+  // Debug: Log das props recebidas
+  useEffect(() => {
+    console.log("🔍 ConnectionManager - Props recebidas:");
+    console.log("  tenantId:", tenantId, "(tipo:", typeof tenantId, ")");
+    console.log("  propApiKey:", propApiKey ? "presente" : "ausente");
+    console.log("  localApiKey:", localApiKey ? "presente" : "ausente");
+    console.log("  apiKey final:", apiKey ? "presente" : "ausente");
+    console.log("  onConnectionChange:", typeof onConnectionChange);
+  }, [tenantId, propApiKey, localApiKey, apiKey, onConnectionChange]);
 
   useEffect(() => {
-    // Configurar listener para eventos de webhook
-    const removeListener = webhookService.addListener((event) => {
-      handleWebhookEvent(event);
-    });
+    // Validação detalhada da API Key (mais importante que tenantId)
+    console.log("🔍 useEffect - Verificando API Key:");
+    console.log("  apiKey:", apiKey ? "presente" : "ausente");
+    console.log("  apiKey válida?", !!(apiKey && apiKey.trim()));
 
-    // Garantir que connections é um array
-    const connectionsArray = Array.isArray(connections) ? connections : [];
+    if (!apiKey) {
+      console.warn("⚠️ API Key está vazia ou undefined");
+      setError("API Key é obrigatória para gerenciar conexões");
+      return;
+    }
 
-    // Iniciar polling para conexões ativas
-    connectionsArray.forEach((connection) => {
-      if (
-        connection &&
-        (connection.status === "connecting" ||
-          connection.status === "qr" ||
-          connection.status === "pairing")
-      ) {
-        startStatusPolling(connection.sessionId);
-      }
-    });
+    if (typeof apiKey !== "string") {
+      console.warn("⚠️ API Key não é uma string:", typeof apiKey);
+      setError(`API Key deve ser uma string, recebido: ${typeof apiKey}`);
+      return;
+    }
 
-    return () => {
-      // Limpar webhook listener
-      removeListener();
+    if (!apiKey.trim()) {
+      console.warn("⚠️ API Key está vazia após trim()");
+      setError("API Key não pode estar vazia");
+      return;
+    }
 
-      // Limpar polling ao desmontar
-      Object.values(statusPolling).forEach((intervalId) => {
-        apiService.stopStatusPolling(intervalId);
-      });
+    console.log("✅ API Key válida, iniciando verificação de conexões");
+    checkExistingConnections();
+  }, [apiKey]); // Mudou de tenantId para apiKey
+
+  const getRequestHeaders = () => {
+    const headers = {
+      "Content-Type": "application/json",
     };
-  }, [connections]);
 
-  // Manipular eventos recebidos via webhook
-  const handleWebhookEvent = (event) => {
-    console.log("Evento webhook recebido:", event);
-
-    switch (event.event) {
-      case "qr_code":
-        if (event.data.qrCode) {
-          setQrCode(event.data.qrCode);
-          console.log("QR Code recebido via webhook");
-        }
-        break;
-
-      case "pairing_code":
-        if (event.data.pairingCode) {
-          setPairingCode(event.data.pairingCode);
-          console.log("Código de pareamento recebido via webhook");
-        }
-        break;
-
-      case "connection":
-        if (event.data.sessionId && event.data.status) {
-          onStatusUpdate(event.data.sessionId, event.data.status);
-          console.log(
-            `Status da conexão ${event.data.sessionId}: ${event.data.status}`
-          );
-
-          // Se conectou com sucesso, limpar QR/pairing codes
-          if (event.data.status === "connected") {
-            setQrCode(null);
-            setPairingCode(null);
-            stopStatusPolling(event.data.sessionId);
-          }
-        }
-        break;
-
-      case "message":
-        console.log("Nova mensagem recebida via webhook:", event.data);
-        break;
-
-      default:
-        console.log("Evento webhook não tratado:", event.event);
+    // Adiciona API Key se fornecida
+    if (apiKey && apiKey.trim()) {
+      headers["X-API-Key"] = apiKey;
+      console.log("🔑 API Key adicionada aos headers");
+    } else {
+      console.warn("⚠️ API Key não fornecida");
     }
+
+    return headers;
   };
 
-  const startStatusPolling = (sessionId) => {
-    if (statusPolling[sessionId]) return; // Já está fazendo polling
-
-    const intervalId = apiService.startStatusPolling(
-      sessionId,
-      (status) => {
-        onStatusUpdate(sessionId, status.status);
-
-        if (status.qrCode) {
-          setQrCode(status.qrCode);
-        }
-
-        if (status.pairingCode) {
-          setPairingCode(status.pairingCode);
-        }
-
-        // Parar polling se conectado ou desconectado
-        if (status.status === "connected" || status.status === "disconnected") {
-          stopStatusPolling(sessionId);
-        }
-      },
-      3000 // 3 segundos
-    );
-
-    setStatusPolling((prev) => ({
-      ...prev,
-      [sessionId]: intervalId,
-    }));
-  };
-
-  const stopStatusPolling = (sessionId) => {
-    if (statusPolling[sessionId]) {
-      apiService.stopStatusPolling(statusPolling[sessionId]);
-      setStatusPolling((prev) => {
-        const newPolling = { ...prev };
-        delete newPolling[sessionId];
-        return newPolling;
-      });
-    }
-  };
-
-  const handleCreateConnection = async (e) => {
-    e.preventDefault();
-
-    if (connectionData.usePairingCode && !connectionData.phoneNumber) {
-      alert("Número de telefone é obrigatório para código de pareamento");
+  // Nova função: verificar conexões existentes usando o endpoint correto da API
+  const checkExistingConnections = async () => {
+    if (!apiKey || !apiKey.trim()) {
+      console.error("❌ checkExistingConnections: API Key não fornecida");
+      setError("API Key é obrigatória para verificar conexões");
       return;
     }
 
     try {
-      setIsCreating(true);
-      setQrCode(null);
-      setPairingCode(null);
+      // Usar o endpoint correto da API: GET /api/connections
+      // A API usa middleware que identifica o tenant pela API Key automaticamente
+      const url = `${API_BASE_URL}/api/connections`;
+      console.log("📡 Fazendo requisição para:", url);
+      console.log("📡 Headers:", getRequestHeaders());
 
-      const response = await apiService.createConnection({
-        usePairingCode: connectionData.usePairingCode,
-        phoneNumber: connectionData.phoneNumber || undefined,
+      const response = await fetch(url, {
+        headers: getRequestHeaders(),
       });
 
-      if (response.success) {
-        const newConnection = response.data;
-        onConnectionCreated(newConnection);
-        setShowCreateForm(false);
+      console.log("📡 Resposta HTTP:", response.status, response.statusText);
 
-        // Iniciar polling E webhook para esta nova conexão
-        startStatusPolling(newConnection.sessionId);
-        webhookService.startPolling(newConnection.sessionId);
-
-        // Reset form
-        setConnectionData({
-          usePairingCode: false,
-          phoneNumber: "",
-        });
+      if (!response.ok) {
+        const errorText = await response
+          .text()
+          .catch(() => "Erro desconhecido");
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
-    } catch (error) {
-      alert("Erro ao criar conexão: " + error.message);
-    } finally {
-      setIsCreating(false);
+
+      const result = await response.json();
+      console.log("📋 Resposta de conexões:", result);
+
+      // A API retorna { success: true, data: [...] }
+      const connections = result.data || [];
+
+      // Como a API já filtra pelo tenant da API Key, pegamos a primeira conexão
+      const currentConnection = connections.length > 0 ? connections[0] : null;
+
+      if (currentConnection) {
+        console.log("🔗 Conexão encontrada:", currentConnection);
+        setSessionId(currentConnection.sessionId);
+        setConnectionStatus(
+          currentConnection.isConnected ? "connected" : "connecting"
+        );
+
+        if (currentConnection.isConnected && currentConnection.profileData) {
+          setSessionInfo(currentConnection.profileData);
+        }
+
+        // Se está conectando, verificar status periodicamente
+        if (!currentConnection.isConnected) {
+          startPolling(currentConnection.sessionId);
+        }
+      } else {
+        console.log("❌ Nenhuma conexão encontrada");
+        setConnectionStatus("disconnected");
+        setSessionId(null);
+        setSessionInfo(null);
+      }
+
+      setError(""); // Limpa erro se sucesso
+
+      if (onConnectionChange) {
+        onConnectionChange(
+          currentConnection
+            ? currentConnection.isConnected
+              ? "connected"
+              : "connecting"
+            : "disconnected"
+        );
+      }
+    } catch (err) {
+      console.error("❌ Erro ao verificar conexões:", err);
+      setError(`Erro ao verificar conexões: ${err.message}`);
     }
   };
 
-  const handleDisconnect = async (sessionId) => {
-    if (!window.confirm("Tem certeza que deseja desconectar esta sessão?")) {
+  // Nova função: verificar status de uma sessão específica
+  const checkConnectionStatus = async (sessionId) => {
+    if (!sessionId) {
+      console.error("❌ checkConnectionStatus: sessionId não fornecido");
       return;
     }
 
     try {
-      await apiService.disconnectSession(sessionId);
-      onStatusUpdate(sessionId, "disconnected");
-      stopStatusPolling(sessionId);
-      webhookService.stopPolling();
-    } catch (error) {
-      alert("Erro ao desconectar: " + error.message);
+      // Usar o endpoint correto: GET /api/connection/:sessionId/status
+      const url = `${API_BASE_URL}/api/connection/${sessionId}/status`;
+      console.log("📡 Verificando status da sessão:", sessionId);
+
+      const response = await fetch(url, {
+        headers: getRequestHeaders(),
+      });
+
+      if (!response.ok) {
+        const errorText = await response
+          .text()
+          .catch(() => "Erro desconhecido");
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log("📋 Status da sessão:", result);
+
+      // A API retorna { success: true, data: { isConnected, qrCode, pairingCode } }
+      const statusData = result.data || result;
+
+      if (statusData.isConnected) {
+        setConnectionStatus("connected");
+        // Buscar informações do perfil se conectado
+        await getSessionProfile(sessionId);
+      } else {
+        setConnectionStatus("connecting");
+
+        // Atualizar QR Code ou Pairing Code se disponível
+        if (statusData.qrCode && statusData.qrCode !== qrCode) {
+          setQrCode(statusData.qrCode);
+        }
+
+        if (statusData.pairingCode && statusData.pairingCode !== pairingCode) {
+          setPairingCode(statusData.pairingCode);
+        }
+      }
+
+      if (onConnectionChange) {
+        onConnectionChange(statusData.isConnected ? "connected" : "connecting");
+      }
+
+      return statusData;
+    } catch (err) {
+      console.error("❌ Erro ao verificar status da sessão:", err);
+      setError(`Erro ao verificar status: ${err.message}`);
+      return null;
     }
   };
 
-  const getStatusColor = (status) => {
-    switch (status) {
+  // Nova função: obter informações do perfil da sessão
+  const getSessionProfile = async (sessionId) => {
+    try {
+      // Buscar novamente as conexões para obter dados do perfil
+      const response = await fetch(`${API_BASE_URL}/api/connections`, {
+        headers: getRequestHeaders(),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        const connections = result.data || [];
+        const connection = connections.find(
+          (conn) => conn.sessionId === sessionId
+        );
+
+        if (connection && connection.profileData) {
+          setSessionInfo(connection.profileData);
+        }
+      }
+    } catch (err) {
+      console.error("❌ Erro ao obter perfil da sessão:", err);
+    }
+  };
+
+  const connectWhatsApp = async () => {
+    if (!apiKey || !apiKey.trim()) {
+      console.error("❌ connectWhatsApp: API Key inválida:", apiKey);
+      setError("API Key é obrigatória para criar conexão");
+      return;
+    }
+
+    setIsLoading(true);
+    setError("");
+    setQrCode("");
+    setPairingCode("");
+
+    try {
+      const payload = {
+        usePairingCode: usePhoneNumber,
+        phoneNumber: usePhoneNumber ? phoneNumber : undefined,
+      };
+      // Não enviamos tenantId no payload - a API identifica pelo middleware da API Key
+
+      console.log("🚀 Criando conexão com payload:", payload);
+      console.log("🚀 URL:", `${API_BASE_URL}/api/connect`);
+
+      // Usar o endpoint correto: POST /api/connect
+      const response = await fetch(`${API_BASE_URL}/api/connect`, {
+        method: "POST",
+        headers: getRequestHeaders(),
+        body: JSON.stringify(payload),
+      });
+
+      console.log("🚀 Resposta HTTP:", response.status, response.statusText);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error("❌ Erro na resposta:", errorData);
+        throw new Error(
+          errorData.error || `HTTP ${response.status}: ${response.statusText}`
+        );
+      }
+
+      const result = await response.json();
+      console.log("✅ Resposta da conexão:", result);
+
+      // A API retorna { success: true, data: { sessionId, qrCode?, pairingCode? } }
+      const connectionData = result.data || result;
+
+      if (connectionData.sessionId) {
+        setSessionId(connectionData.sessionId);
+        console.log("🆔 Session ID recebido:", connectionData.sessionId);
+      }
+
+      if (connectionData.qrCode) {
+        setQrCode(connectionData.qrCode);
+        console.log("📱 QR Code recebido");
+      }
+
+      if (connectionData.pairingCode) {
+        setPairingCode(connectionData.pairingCode);
+        console.log("🔢 Pairing Code recebido:", connectionData.pairingCode);
+      }
+
+      setConnectionStatus("connecting");
+
+      // Iniciar polling para verificar status
+      if (connectionData.sessionId) {
+        startPolling(connectionData.sessionId);
+      }
+
+      if (onConnectionChange) {
+        onConnectionChange("connecting");
+      }
+    } catch (err) {
+      console.error("❌ Erro ao conectar:", err);
+      setError("Erro ao iniciar conexão: " + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const disconnect = async () => {
+    if (!sessionId) {
+      setError("Nenhuma sessão ativa para desconectar");
+      return;
+    }
+
+    try {
+      console.log("🔌 Desconectando sessão:", sessionId);
+
+      // Usar o endpoint correto: DELETE /api/connection/:sessionId
+      const response = await fetch(
+        `${API_BASE_URL}/api/connection/${sessionId}`,
+        {
+          method: "DELETE",
+          headers: getRequestHeaders(),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorData.error || `HTTP ${response.status}: ${response.statusText}`
+        );
+      }
+
+      // Limpar estado local
+      setConnectionStatus("disconnected");
+      setQrCode("");
+      setPairingCode("");
+      setSessionInfo(null);
+      setSessionId(null);
+
+      console.log("✅ Desconectado com sucesso");
+
+      if (onConnectionChange) {
+        onConnectionChange("disconnected");
+      }
+    } catch (err) {
+      console.error("❌ Erro ao desconectar:", err);
+      setError("Erro ao desconectar: " + err.message);
+    }
+  };
+
+  const deleteConnection = async () => {
+    if (!sessionId) {
+      setError("Nenhuma sessão ativa para excluir");
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      console.log("🗑️ Excluindo sessão:", sessionId);
+
+      // Usar o endpoint correto: DELETE /api/connection/:sessionId
+      const deleteResponse = await fetch(
+        `${API_BASE_URL}/api/connection/${sessionId}`,
+        {
+          method: "DELETE",
+          headers: getRequestHeaders(),
+        }
+      );
+
+      if (!deleteResponse.ok) {
+        const errorData = await deleteResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || "Falha ao excluir conexão");
+      }
+
+      // Limpar estado local
+      setConnectionStatus("disconnected");
+      setQrCode("");
+      setPairingCode("");
+      setSessionInfo(null);
+      setSessionId(null);
+      setShowDeleteConfirm(false);
+
+      console.log("✅ Conexão excluída com sucesso");
+
+      // Callback para notificar o componente pai
+      if (onConnectionChange) {
+        onConnectionChange("deleted");
+      }
+    } catch (err) {
+      console.error("❌ Erro ao excluir conexão:", err);
+      setError("Erro ao excluir conexão: " + err.message);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Função de polling atualizada para usar sessionId
+  const startPolling = (sessionId) => {
+    if (!sessionId) return;
+
+    const interval = setInterval(async () => {
+      const status = await checkConnectionStatus(sessionId);
+
+      if (status && status.isConnected) {
+        clearInterval(interval);
+      }
+    }, 3000); // Verificar a cada 3 segundos
+
+    // Limpar interval após 5 minutos para evitar polling infinito
+    setTimeout(() => {
+      clearInterval(interval);
+    }, 300000); // 5 minutos
+  };
+
+  const getStatusClasses = () => {
+    switch (connectionStatus) {
+      case "connected":
+        return "bg-green-100 text-green-800";
+      case "connecting":
+        return "bg-yellow-100 text-yellow-800";
+      case "disconnected":
+        return "bg-red-100 text-red-800";
+      default:
+        return "bg-gray-100 text-gray-600";
+    }
+  };
+
+  const getDotClasses = () => {
+    switch (connectionStatus) {
       case "connected":
         return "bg-green-500";
       case "connecting":
-        return "bg-yellow-500";
-      case "qr":
-        return "bg-blue-500";
-      case "pairing":
-        return "bg-purple-500";
+        return "bg-yellow-500 animate-pulse";
       case "disconnected":
         return "bg-red-500";
       default:
-        return "bg-gray-500";
+        return "bg-gray-400";
     }
   };
 
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case "connected":
-        return "✅";
-      case "connecting":
-        return "🔄";
-      case "qr":
-        return "📱";
-      case "pairing":
-        return "🔢";
-      case "disconnected":
-        return "❌";
-      default:
-        return "❓";
-    }
-  };
-
-  const getStatusText = (status) => {
-    switch (status) {
+  const getStatusText = () => {
+    switch (connectionStatus) {
       case "connected":
         return "Conectado";
       case "connecting":
         return "Conectando...";
-      case "qr":
-        return "Aguardando QR Code";
-      case "pairing":
-        return "Aguardando Código";
       case "disconnected":
         return "Desconectado";
       default:
-        return "Status Desconhecido";
+        return "Desconhecido";
     }
   };
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="max-w-2xl mx-auto p-6 bg-white rounded-xl shadow-lg border border-gray-200">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-        <h2 className="text-2xl font-bold text-gray-800">
-          🔌 Gerenciador de Conexões
-        </h2>
-
-        <div className="flex flex-wrap gap-3">
-          <button
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-              showWebhookConfig
-                ? "bg-purple-600 text-white"
-                : "bg-purple-500 hover:bg-purple-600 text-white"
-            }`}
-            onClick={() => setShowWebhookConfig(!showWebhookConfig)}
-          >
-            🔗 Webhook
-          </button>
-
-          <button
-            className="bg-blue-500 hover:bg-blue-600 text-white font-medium px-4 py-2 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
-            onClick={() => setShowCreateForm(true)}
-            disabled={isCreating}
-          >
-            ➕ Nova Conexão
-          </button>
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 pb-4 border-b border-gray-200">
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-1">
+            Gerenciador de Conexão WhatsApp
+          </h2>
+          <div className="text-sm text-gray-500 space-y-1">
+            {tenantId ? (
+              <p className="font-mono bg-green-50 text-green-700 px-2 py-1 rounded">
+                ✅ Tenant: {tenantId}
+              </p>
+            ) : (
+              <p className="font-mono bg-blue-50 text-blue-700 px-2 py-1 rounded">
+                🔄 Tenant: identificado pela API Key
+              </p>
+            )}
+            {sessionId && (
+              <p className="font-mono bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs">
+                🆔 Session: {sessionId.substring(0, 8)}...
+              </p>
+            )}
+            {apiKey ? (
+              <p className="text-green-600">🔑 API Key: configurada</p>
+            ) : (
+              <p className="text-red-600">❌ API Key: não configurada</p>
+            )}
+          </div>
+        </div>
+        <div
+          className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium ${getStatusClasses()}`}
+        >
+          <span className={`w-2 h-2 rounded-full ${getDotClasses()}`}></span>
+          <span>{getStatusText()}</span>
         </div>
       </div>
 
-      {/* Configuração de Webhook */}
-      {showWebhookConfig && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 mb-6">
-          <WebhookManager
-            tenant={tenant}
-            onWebhookReceived={handleWebhookEvent}
-          />
+      {/* Error Message */}
+      {error && (
+        <div className="flex items-center gap-2 p-3 mb-4 bg-red-50 text-red-700 border border-red-200 rounded-lg">
+          <span className="text-base">⚠️</span>
+          {error}
         </div>
       )}
 
-      {/* Lista de Conexões */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar">
-        {!Array.isArray(connections) || connections.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 text-center text-gray-500">
-            <div className="text-6xl mb-4">📵</div>
-            <p className="text-lg font-medium mb-2">
-              Nenhuma conexão encontrada
-            </p>
-            <p className="text-sm">Crie sua primeira conexão WhatsApp</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-            {connections.map((connection) => (
-              <div
-                key={connection.sessionId}
-                className={`bg-white border-2 rounded-lg p-6 cursor-pointer transition-all hover:-translate-y-1 hover:shadow-lg ${
-                  activeConnection?.sessionId === connection.sessionId
-                    ? "border-green-500 shadow-md"
-                    : "border-gray-200"
-                }`}
-                onClick={() => onConnectionSelected(connection)}
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <div className="flex-1">
-                    <h4 className="text-lg font-semibold text-gray-800 mb-1">
-                      Sessão {connection.sessionId.substring(0, 8)}...
-                    </h4>
-                    <p className="text-xs text-gray-500 font-mono">
-                      {connection.sessionId}
-                    </p>
-                  </div>
+      {/* Content */}
+      <div className="mt-4">
+        {/* Disconnected State */}
+        {connectionStatus === "disconnected" && (
+          <div className="space-y-4">
+            {/* Campo para API Key se não foi fornecida como prop */}
+            {!propApiKey && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <h4 className="font-medium text-yellow-900 mb-2">
+                  🔑 Configuração da API Key
+                </h4>
+                <p className="text-sm text-yellow-700 mb-3">
+                  Para conectar ao WhatsApp, você precisa inserir sua API Key:
+                </p>
+                <input
+                  type="text"
+                  value={localApiKey}
+                  onChange={(e) => setLocalApiKey(e.target.value)}
+                  placeholder="Cole sua API Key aqui..."
+                  className="w-full px-4 py-3 border border-yellow-300 rounded-lg text-base font-mono bg-white placeholder-gray-400 focus:outline-none focus:ring-3 focus:ring-yellow-100 focus:border-yellow-500"
+                />
+                <p className="text-xs text-yellow-600 mt-2">
+                  💡 A API Key identifica automaticamente seu tenant e
+                  permissões
+                </p>
+              </div>
+            )}
 
+            {/* Debug Info - Remove em produção */}
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm">
+              <h4 className="font-medium text-gray-900 mb-2">🔍 Debug Info:</h4>
+              <div className="space-y-1 text-gray-600">
+                <p>
+                  TenantId:{" "}
+                  <span className="font-mono">
+                    {tenantId || "identificado pela API Key"}
+                  </span>
+                </p>
+                <p>
+                  SessionId:{" "}
+                  <span className="font-mono">{sessionId || "undefined"}</span>
+                </p>
+                <p>
+                  API Key Source:{" "}
+                  <span className="font-mono">
+                    {propApiKey
+                      ? "prop"
+                      : localApiKey
+                      ? "input local"
+                      : "nenhuma"}
+                  </span>
+                </p>
+                <p>
+                  API Key válida:{" "}
+                  <span
+                    className={
+                      apiKey && apiKey.trim()
+                        ? "text-green-600"
+                        : "text-red-600"
+                    }
+                  >
+                    {apiKey && apiKey.trim() ? "✅ Sim" : "❌ Não"}
+                  </span>
+                </p>
+                <p>
+                  API Base URL:{" "}
+                  <span className="font-mono">{API_BASE_URL}</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <label className="flex items-center gap-3 cursor-pointer text-sm text-gray-700">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    checked={usePhoneNumber}
+                    onChange={(e) => setUsePhoneNumber(e.target.checked)}
+                    className="sr-only"
+                  />
                   <div
-                    className={`flex items-center gap-2 px-3 py-1 rounded-full text-white text-sm font-medium ${getStatusColor(
-                      connection.status
-                    )}`}
+                    className={`w-4 h-4 border-2 rounded flex items-center justify-center transition-all duration-200 ${
+                      usePhoneNumber
+                        ? "bg-blue-500 border-blue-500"
+                        : "border-gray-300"
+                    }`}
                   >
-                    <span>{getStatusIcon(connection.status)}</span>
-                    <span>{getStatusText(connection.status)}</span>
+                    {usePhoneNumber && (
+                      <span className="text-white text-xs font-bold">✓</span>
+                    )}
                   </div>
                 </div>
+                Usar código de pareamento (requer número de telefone)
+              </label>
 
-                <div className="space-y-2 mb-4">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-600">
-                      Tipo:
-                    </span>
-                    <span className="text-sm text-gray-800">
-                      {connection.usePairingCode
-                        ? "🔢 Código de Pareamento"
-                        : "📱 QR Code"}
-                    </span>
-                  </div>
-
-                  {connection.phoneNumber && (
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm font-medium text-gray-600">
-                        Telefone:
-                      </span>
-                      <span className="text-sm text-gray-800">
-                        {connection.phoneNumber}
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-600">
-                      Criado:
-                    </span>
-                    <span className="text-sm text-gray-800">
-                      {new Date(connection.createdAt).toLocaleString("pt-BR")}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex justify-center">
-                  {connection.status === "connected" && (
-                    <button
-                      className="bg-red-500 hover:bg-red-600 text-white font-medium px-4 py-2 rounded-lg transition-colors"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDisconnect(connection.sessionId);
-                      }}
-                    >
-                      🔌 Desconectar
-                    </button>
-                  )}
-
-                  {(connection.status === "qr" ||
-                    connection.status === "pairing") && (
-                    <div className="text-center">
-                      <p className="text-sm text-gray-600 italic">
-                        {connection.status === "qr"
-                          ? "Escaneie o QR Code"
-                          : "Digite o código no WhatsApp"}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* QR Code Display */}
-      {qrCode && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl p-8 max-w-md w-full text-center">
-            <h3 className="text-2xl font-bold text-gray-800 mb-6">
-              📱 Escaneie o QR Code
-            </h3>
-
-            <div className="mb-6">
-              <img
-                src={qrCode}
-                alt="QR Code WhatsApp"
-                className="w-72 h-72 mx-auto border-4 border-green-500 rounded-lg p-2"
-              />
-            </div>
-
-            <div className="bg-gray-50 rounded-lg p-4 text-left">
-              <p className="font-semibold text-gray-800 mb-2">Como conectar:</p>
-              <ol className="text-sm text-gray-600 space-y-1 list-decimal list-inside">
-                <li>Abra o WhatsApp no seu telefone</li>
-                <li>Toque em Menu {">"} Aparelhos conectados</li>
-                <li>Toque em "Conectar um aparelho"</li>
-                <li>Escaneie este QR Code</li>
-              </ol>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Pairing Code Display */}
-      {pairingCode && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl p-8 max-w-md w-full text-center">
-            <h3 className="text-2xl font-bold text-gray-800 mb-6">
-              🔢 Código de Pareamento
-            </h3>
-
-            <div className="bg-gray-100 rounded-lg p-6 mb-6">
-              <div className="text-4xl font-bold text-green-600 font-mono tracking-wider">
-                {pairingCode}
-              </div>
-            </div>
-
-            <div className="bg-gray-50 rounded-lg p-4 text-left">
-              <p className="font-semibold text-gray-800 mb-2">Como conectar:</p>
-              <ol className="text-sm text-gray-600 space-y-1 list-decimal list-inside">
-                <li>Abra o WhatsApp no seu telefone</li>
-                <li>Toque em Menu {">"} Aparelhos conectados</li>
-                <li>Toque em "Conectar um aparelho"</li>
-                <li>
-                  Digite este código: <strong>{pairingCode}</strong>
-                </li>
-              </ol>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Form para Nova Conexão */}
-      {showCreateForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl p-8 max-w-md w-full">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold text-gray-800">
-                🆕 Nova Conexão WhatsApp
-              </h3>
-              <button
-                className="text-red-500 hover:text-red-700 text-xl"
-                onClick={() => setShowCreateForm(false)}
-                disabled={isCreating}
-              >
-                ✖️
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateConnection} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-3">
-                  Método de Conexão:
-                </label>
-                <div className="space-y-2">
-                  <label className="flex items-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
-                    <input
-                      type="radio"
-                      name="connectionMethod"
-                      checked={!connectionData.usePairingCode}
-                      onChange={() =>
-                        setConnectionData((prev) => ({
-                          ...prev,
-                          usePairingCode: false,
-                          phoneNumber: "",
-                        }))
-                      }
-                      disabled={isCreating}
-                      className="w-4 h-4 text-green-600 border-gray-300 focus:ring-green-500"
-                    />
-                    <div className="ml-3">
-                      <div className="font-medium text-gray-800">
-                        📱 QR Code (recomendado)
-                      </div>
-                      <div className="text-sm text-gray-500">
-                        Mais rápido e fácil
-                      </div>
-                    </div>
-                  </label>
-
-                  <label className="flex items-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
-                    <input
-                      type="radio"
-                      name="connectionMethod"
-                      checked={connectionData.usePairingCode}
-                      onChange={() =>
-                        setConnectionData((prev) => ({
-                          ...prev,
-                          usePairingCode: true,
-                        }))
-                      }
-                      disabled={isCreating}
-                      className="w-4 h-4 text-green-600 border-gray-300 focus:ring-green-500"
-                    />
-                    <div className="ml-3">
-                      <div className="font-medium text-gray-800">
-                        🔢 Código de Pareamento
-                      </div>
-                      <div className="text-sm text-gray-500">
-                        Requer número de telefone
-                      </div>
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              {connectionData.usePairingCode && (
+              {usePhoneNumber && (
                 <div>
-                  <label
-                    htmlFor="phoneNumber"
-                    className="block text-sm font-medium text-gray-700 mb-2"
-                  >
-                    Número do WhatsApp *
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Número de telefone (com código do país):
                   </label>
                   <input
                     type="tel"
-                    id="phoneNumber"
-                    value={connectionData.phoneNumber}
-                    onChange={(e) =>
-                      setConnectionData((prev) => ({
-                        ...prev,
-                        phoneNumber: e.target.value,
-                      }))
-                    }
-                    placeholder="5511999999999"
-                    disabled={isCreating}
-                    required={connectionData.usePairingCode}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 disabled:bg-gray-100"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    placeholder="Ex: 5511999999999"
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg text-base transition-all duration-200 bg-white placeholder-gray-400 focus:outline-none focus:ring-3 focus:ring-blue-100 focus:border-blue-500"
                   />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Digite apenas números (código país + DDD + número)
+                </div>
+              )}
+
+              <button
+                onClick={connectWhatsApp}
+                disabled={
+                  isLoading ||
+                  !apiKey ||
+                  !apiKey.trim() ||
+                  (usePhoneNumber && !phoneNumber)
+                }
+                className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-500 text-white border-none rounded-lg text-base font-medium cursor-pointer transition-all duration-200 hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+              >
+                {isLoading ? (
+                  <span className="flex items-center gap-2">
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Conectando...
+                  </span>
+                ) : (
+                  "Conectar WhatsApp"
+                )}
+              </button>
+
+              {(!apiKey || !apiKey.trim()) && (
+                <p className="text-sm text-red-600 text-center">
+                  ⚠️ API Key é obrigatória para conectar
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Connecting State */}
+        {connectionStatus === "connecting" && (
+          <div className="text-center">
+            {qrCode && (
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                  Escaneie o QR Code no WhatsApp
+                </h3>
+                <div className="flex justify-center mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <img
+                    src={qrCode}
+                    alt="QR Code"
+                    className="max-w-64 sm:max-w-80 h-auto rounded-lg"
+                  />
+                </div>
+                <div className="text-sm text-gray-600 leading-relaxed text-left bg-blue-50 p-4 rounded-lg space-y-1">
+                  <p>
+                    <strong>1.</strong> Abra o WhatsApp no seu telefone
+                  </p>
+                  <p>
+                    <strong>2.</strong> Toque em Menu ou Configurações e
+                    selecione Dispositivos conectados
+                  </p>
+                  <p>
+                    <strong>3.</strong> Toque em Conectar um dispositivo
+                  </p>
+                  <p>
+                    <strong>4.</strong> Aponte seu telefone para esta tela para
+                    capturar o código
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {pairingCode && (
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                  Código de Pareamento
+                </h3>
+                <div className="flex justify-center mb-4">
+                  <span className="text-2xl sm:text-3xl md:text-4xl font-bold text-blue-500 bg-blue-50 px-4 sm:px-6 py-3 sm:py-4 rounded-xl border-2 border-blue-200 tracking-widest font-mono">
+                    {pairingCode}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-600 leading-relaxed">
+                  Digite este código no WhatsApp do seu telefone para conectar.
+                </p>
+              </div>
+            )}
+
+            {sessionId && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                <p className="text-sm text-blue-700">
+                  🆔 <strong>Session ID:</strong> {sessionId}
+                </p>
+                <p className="text-xs text-blue-600 mt-1">
+                  Aguardando confirmação do WhatsApp...
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Connected State */}
+        {connectionStatus === "connected" && (
+          <div className="text-center">
+            <div className="bg-green-50 border border-green-200 rounded-lg p-5 mb-5">
+              <h3 className="text-lg font-semibold text-green-900 mb-4">
+                Sessão Conectada
+              </h3>
+
+              {sessionId && (
+                <div className="bg-white border border-green-200 rounded-lg p-3 mb-4">
+                  <p className="text-sm text-gray-700">
+                    <strong>Session ID:</strong>
+                  </p>
+                  <p className="font-mono text-xs text-gray-600 break-all">
+                    {sessionId}
                   </p>
                 </div>
               )}
 
-              <div className="flex gap-3 pt-4">
+              {sessionInfo && (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center py-2 border-b border-green-100 last:border-b-0">
+                    <span className="font-medium text-slate-900">Nome:</span>
+                    <span className="text-slate-600 font-mono">
+                      {sessionInfo.name || "N/A"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-green-100 last:border-b-0">
+                    <span className="font-medium text-slate-900">
+                      Telefone:
+                    </span>
+                    <span className="text-slate-600 font-mono">
+                      {sessionInfo.phone || "N/A"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-green-100 last:border-b-0">
+                    <span className="font-medium text-slate-900">ID:</span>
+                    <span className="text-slate-600 font-mono break-all">
+                      {sessionInfo.id || "N/A"}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={disconnect}
+                className="flex-1 px-6 py-3 bg-red-500 text-white border-none rounded-lg text-base font-medium cursor-pointer transition-all duration-200 hover:bg-red-600"
+              >
+                Desconectar
+              </button>
+
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                className="flex-1 px-6 py-3 bg-gray-600 text-white border-none rounded-lg text-base font-medium cursor-pointer transition-all duration-200 hover:bg-gray-700"
+              >
+                Excluir Conexão
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+            <div className="text-center">
+              <div className="text-6xl mb-4">⚠️</div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">
+                Excluir Conexão
+              </h3>
+              <p className="text-gray-600 mb-6">
+                Tem certeza que deseja excluir esta conexão? Esta ação não pode
+                ser desfeita e você precisará configurar novamente.
+              </p>
+
+              <div className="flex flex-col sm:flex-row gap-3">
                 <button
-                  type="button"
-                  className="flex-1 bg-gray-500 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
-                  onClick={() => setShowCreateForm(false)}
-                  disabled={isCreating}
+                  onClick={() => setShowDeleteConfirm(false)}
+                  disabled={isDeleting}
+                  className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg font-medium transition-all duration-200 hover:bg-gray-300 disabled:opacity-50"
                 >
                   Cancelar
                 </button>
+
                 <button
-                  type="submit"
-                  className="flex-1 bg-green-500 hover:bg-green-600 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  disabled={
-                    isCreating ||
-                    (connectionData.usePairingCode &&
-                      !connectionData.phoneNumber)
-                  }
+                  onClick={deleteConnection}
+                  disabled={isDeleting}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-red-500 text-white rounded-lg font-medium transition-all duration-200 hover:bg-red-600 disabled:bg-red-300"
                 >
-                  {isCreating ? (
+                  {isDeleting ? (
                     <>
                       <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                      Criando...
+                      Excluindo...
                     </>
                   ) : (
-                    "Criar Conexão"
+                    "Confirmar Exclusão"
                   )}
                 </button>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}

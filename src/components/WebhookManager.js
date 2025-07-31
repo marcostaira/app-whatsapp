@@ -1,454 +1,465 @@
 import React, { useState, useEffect } from "react";
-import { apiService } from "../services/apiService";
-import WebhookInstructions from "./WebhookInstructions";
 
-const WebhookManager = ({ tenant, onWebhookReceived }) => {
+const WebhookManager = ({ tenantId, onWebhookChange }) => {
   const [webhookUrl, setWebhookUrl] = useState("");
-  const [isConfiguring, setIsConfiguring] = useState(false);
-  const [webhookStatus, setWebhookStatus] = useState("inactive");
-  const [receivedEvents, setReceivedEvents] = useState([]);
-  const [isListening, setIsListening] = useState(false);
-  const [webhookPort, setWebhookPort] = useState(3005);
-  const [showInstructions, setShowInstructions] = useState(false);
+  const [isEnabled, setIsEnabled] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isTestLoading, setIsTestLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [testResult, setTestResult] = useState(null);
+  const [webhookLogs, setWebhookLogs] = useState([]);
+  const [eventTypes, setEventTypes] = useState({
+    connection: true,
+    message: true,
+    message_status: true,
+    contact: false,
+    group: false,
+    presence: false,
+    qr_code: true,
+    pairing_code: true,
+    error: true,
+  });
 
   useEffect(() => {
-    if (tenant?.webhookUrl) {
-      setWebhookUrl(tenant.webhookUrl);
-      setWebhookStatus("configured");
-    }
-  }, [tenant]);
+    loadWebhookConfig();
+    loadWebhookLogs();
+  }, [tenantId]);
 
-  // Gerar URL do webhook local
-  const generateLocalWebhookUrl = () => {
-    const localUrl = `http://localhost:${webhookPort}/webhook`;
-    setWebhookUrl(localUrl);
-    return localUrl;
+  const loadWebhookConfig = async () => {
+    try {
+      const response = await fetch(`/api/webhook/config/${tenantId}`);
+      const config = await response.json();
+
+      if (config) {
+        setWebhookUrl(config.url || "");
+        setIsEnabled(config.enabled || false);
+        setEventTypes({ ...eventTypes, ...config.eventTypes });
+      }
+    } catch (err) {
+      console.error("Erro ao carregar configuração do webhook:", err);
+    }
   };
 
-  // Configurar webhook na API
-  const handleConfigureWebhook = async (e) => {
-    e.preventDefault();
+  const loadWebhookLogs = async () => {
+    try {
+      const response = await fetch(`/api/webhook/logs/${tenantId}?limit=10`);
+      const logs = await response.json();
+      setWebhookLogs(logs || []);
+    } catch (err) {
+      console.error("Erro ao carregar logs do webhook:", err);
+    }
+  };
+
+  const validateUrl = (url) => {
+    try {
+      const urlObj = new URL(url);
+      return ["http:", "https:"].includes(urlObj.protocol);
+    } catch {
+      return false;
+    }
+  };
+
+  const saveWebhookConfig = async () => {
+    setIsLoading(true);
+    setError("");
+    setSuccess("");
 
     if (!webhookUrl.trim()) {
-      alert("URL do webhook é obrigatória");
+      setError("URL do webhook é obrigatória");
+      setIsLoading(false);
+      return;
+    }
+
+    if (!validateUrl(webhookUrl)) {
+      setError("URL inválida. Use http:// ou https://");
+      setIsLoading(false);
       return;
     }
 
     try {
-      setIsConfiguring(true);
-
-      // Atualizar tenant com nova URL de webhook
-      await apiService.updateTenant(tenant.id, {
-        webhookUrl: webhookUrl,
+      const response = await fetch(`/api/webhook/config/${tenantId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: webhookUrl.trim(),
+          enabled: isEnabled,
+          eventTypes,
+        }),
       });
 
-      // Testar webhook
-      const testResult = await apiService.testWebhook(webhookUrl);
-
-      if (testResult.success) {
-        setWebhookStatus("active");
-        alert("Webhook configurado e testado com sucesso!");
+      if (response.ok) {
+        setSuccess("Configuração salva com sucesso!");
+        if (onWebhookChange) {
+          onWebhookChange({ url: webhookUrl, enabled: isEnabled, eventTypes });
+        }
+        setTimeout(() => setSuccess(""), 3000);
       } else {
-        setWebhookStatus("configured");
-        alert(
-          "Webhook configurado, mas teste falhou. Verifique se a URL está acessível."
-        );
+        throw new Error("Erro ao salvar configuração");
       }
-    } catch (error) {
-      alert("Erro ao configurar webhook: " + error.message);
-      setWebhookStatus("error");
+    } catch (err) {
+      setError("Erro ao salvar configuração do webhook");
     } finally {
-      setIsConfiguring(false);
+      setIsLoading(false);
     }
   };
 
-  // Iniciar servidor webhook local (simulação)
-  const startLocalWebhookServer = () => {
-    setIsListening(true);
-    setWebhookStatus("listening");
-
-    // Simular recebimento de webhooks via polling
-    const pollForWebhooks = setInterval(() => {
-      // Em uma implementação real, isso seria um servidor Express
-      // Por enquanto, vamos simular eventos
-      checkForNewEvents();
-    }, 2000);
-
-    // Salvar intervalId para cleanup
-    window.webhookPollingInterval = pollForWebhooks;
-  };
-
-  const stopLocalWebhookServer = () => {
-    setIsListening(false);
-    setWebhookStatus("inactive");
-
-    if (window.webhookPollingInterval) {
-      clearInterval(window.webhookPollingInterval);
-      window.webhookPollingInterval = null;
+  const testWebhook = async () => {
+    if (!webhookUrl.trim()) {
+      setError("Informe a URL do webhook primeiro");
+      return;
     }
-  };
 
-  // Verificar novos eventos (simulação)
-  const checkForNewEvents = async () => {
+    if (!validateUrl(webhookUrl)) {
+      setError("URL inválida. Use http:// ou https://");
+      return;
+    }
+
+    setIsTestLoading(true);
+    setTestResult(null);
+    setError("");
+
     try {
-      // Em uma implementação real, isso consultaria seu endpoint de eventos
-      // Por agora, vamos simular com dados mock
-      const mockEvent = {
-        id: Date.now(),
-        tenantId: tenant?.id,
-        event: "qr_code",
-        data: {
-          qrCode:
-            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-          sessionId: "session-123",
+      const response = await fetch(`/api/webhook/test`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        timestamp: new Date().toISOString(),
-      };
+        body: JSON.stringify({
+          url: webhookUrl.trim(),
+          tenantId,
+        }),
+      });
 
-      // Adicionar evento à lista
-      setReceivedEvents((prev) => [mockEvent, ...prev.slice(0, 19)]); // Manter apenas 20 eventos
+      const result = await response.json();
 
-      // Notificar componente pai
-      onWebhookReceived?.(mockEvent);
-    } catch (error) {
-      console.error("Erro ao verificar eventos:", error);
+      setTestResult({
+        success: response.ok,
+        message:
+          result.message ||
+          (response.ok ? "Teste enviado com sucesso!" : "Falha no teste"),
+        statusCode: result.statusCode,
+        responseTime: result.responseTime,
+      });
+
+      if (response.ok) {
+        loadWebhookLogs(); // Recarrega os logs
+      }
+    } catch (err) {
+      setTestResult({
+        success: false,
+        message: "Erro ao testar webhook: " + err.message,
+        statusCode: null,
+        responseTime: null,
+      });
+    } finally {
+      setIsTestLoading(false);
     }
   };
 
-  const clearEvents = () => {
-    setReceivedEvents([]);
+  const handleEventTypeChange = (eventType, enabled) => {
+    setEventTypes((prev) => ({
+      ...prev,
+      [eventType]: enabled,
+    }));
   };
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case "active":
-        return "bg-green-500";
-      case "listening":
-        return "bg-blue-500";
-      case "configured":
-        return "bg-yellow-500";
-      case "error":
-        return "bg-red-500";
-      default:
-        return "bg-gray-500";
-    }
-  };
-
-  const getStatusText = (status) => {
-    switch (status) {
-      case "active":
-        return "Ativo e Testado";
-      case "listening":
-        return "Escutando Eventos";
-      case "configured":
-        return "Configurado";
-      case "error":
-        return "Erro";
-      default:
-        return "Inativo";
-    }
-  };
-
-  const formatEventData = (event) => {
+  const clearLogs = async () => {
     try {
-      return JSON.stringify(event.data, null, 2);
-    } catch {
-      return "Dados inválidos";
+      await fetch(`/api/webhook/logs/${tenantId}`, {
+        method: "DELETE",
+      });
+      setWebhookLogs([]);
+      setSuccess("Logs limpos com sucesso!");
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (err) {
+      setError("Erro ao limpar logs");
     }
+  };
+
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case "success":
+        return "✅";
+      case "error":
+        return "❌";
+      case "retry":
+        return "🔄";
+      default:
+        return "⚪";
+    }
+  };
+
+  const formatTimestamp = (timestamp) => {
+    return new Date(timestamp).toLocaleString("pt-BR");
+  };
+
+  const eventTypeLabels = {
+    connection: "Conexão",
+    message: "Mensagens",
+    message_status: "Status das Mensagens",
+    contact: "Contatos",
+    group: "Grupos",
+    presence: "Presença",
+    qr_code: "QR Code",
+    pairing_code: "Código de Pareamento",
+    error: "Erros",
   };
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <h3 className="text-xl font-bold text-gray-800">
-          🔗 Configuração de Webhook
-        </h3>
-
-        <div className="flex items-center gap-3">
-          <button
-            className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
-              showInstructions
-                ? "bg-blue-600 text-white"
-                : "bg-gray-500 hover:bg-gray-600 text-white"
-            }`}
-            onClick={() => setShowInstructions(!showInstructions)}
-          >
-            📖 Instruções
-          </button>
-
+      <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-gray-900">
+            Gerenciador de Webhooks
+          </h2>
           <div
-            className={`flex items-center gap-2 px-3 py-1 rounded-full text-white text-sm font-medium ${getStatusColor(
-              webhookStatus
-            )}`}
+            className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium ${
+              isEnabled
+                ? "bg-green-100 text-green-800"
+                : "bg-gray-100 text-gray-600"
+            }`}
           >
-            <span>{getStatusText(webhookStatus)}</span>
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isEnabled ? "bg-green-500" : "bg-gray-400"
+              }`}
+            ></span>
+            {isEnabled ? "Ativo" : "Inativo"}
           </div>
         </div>
-      </div>
 
-      {/* Instruções de Configuração */}
-      {showInstructions && (
-        <div className="bg-white border border-gray-200 rounded-lg p-6">
-          <WebhookInstructions />
-        </div>
-      )}
+        {/* Messages */}
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            ⚠️ {error}
+          </div>
+        )}
 
-      {/* Configuração do Webhook */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6">
-        <form onSubmit={handleConfigureWebhook} className="space-y-4">
+        {success && (
+          <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+            ✅ {success}
+          </div>
+        )}
+
+        {/* URL Configuration */}
+        <div className="space-y-4">
           <div>
-            <h4 className="text-lg font-semibold text-gray-800 mb-4">
-              📡 URL do Webhook
-            </h4>
-            <div className="flex gap-2 mb-2">
-              <input
-                type="url"
-                value={webhookUrl}
-                onChange={(e) => setWebhookUrl(e.target.value)}
-                placeholder="https://seu-site.com/webhook"
-                disabled={isConfiguring}
-                required
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 disabled:bg-gray-100"
-              />
-              <button
-                type="button"
-                className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-md transition-colors disabled:bg-gray-400"
-                onClick={generateLocalWebhookUrl}
-                disabled={isConfiguring}
-              >
-                🏠 Local
-              </button>
-            </div>
-            <p className="text-sm text-gray-500">
-              URL onde sua API enviará os eventos (QR Code, mensagens, status)
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              URL do Webhook
+            </label>
+            <input
+              type="url"
+              value={webhookUrl}
+              onChange={(e) => setWebhookUrl(e.target.value)}
+              placeholder="https://seu-servidor.com/webhook"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg text-base transition-all duration-200 bg-white placeholder-gray-400 focus:outline-none focus:ring-3 focus:ring-blue-100 focus:border-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Deve ser uma URL válida iniciando com http:// ou https://
             </p>
           </div>
 
-          {webhookUrl.includes("localhost") && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <h4 className="text-lg font-semibold text-blue-800 mb-3">
-                🖥️ Servidor Local
-              </h4>
-
-              <div className="flex flex-wrap items-center gap-4 mb-4">
-                <div className="flex items-center gap-2">
-                  <label className="text-sm font-medium text-gray-700">
-                    Porta:
-                  </label>
-                  <input
-                    type="number"
-                    value={webhookPort}
-                    onChange={(e) => setWebhookPort(e.target.value)}
-                    min="3000"
-                    max="9999"
-                    disabled={isListening}
-                    className="w-20 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-                  />
-                </div>
-
-                <div>
-                  {!isListening ? (
-                    <button
-                      type="button"
-                      className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded text-sm transition-colors"
-                      onClick={startLocalWebhookServer}
-                    >
-                      ▶️ Iniciar Servidor
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm transition-colors"
-                      onClick={stopLocalWebhookServer}
-                    >
-                      ⏹️ Parar Servidor
-                    </button>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  checked={isEnabled}
+                  onChange={(e) => setIsEnabled(e.target.checked)}
+                  className="sr-only"
+                />
+                <div
+                  className={`w-5 h-5 border-2 rounded flex items-center justify-center transition-all duration-200 ${
+                    isEnabled
+                      ? "bg-blue-500 border-blue-500"
+                      : "border-gray-300"
+                  }`}
+                >
+                  {isEnabled && (
+                    <span className="text-white text-xs font-bold">✓</span>
                   )}
                 </div>
               </div>
+              <span className="text-sm font-medium text-gray-700">
+                Ativar webhook
+              </span>
+            </label>
+          </div>
 
-              {isListening && (
-                <div className="bg-green-100 border border-green-300 rounded p-3">
-                  <p className="text-sm text-green-800">
-                    ✅ Servidor webhook rodando em:
-                    <code className="bg-white px-2 py-1 rounded ml-1 font-mono">
-                      http://localhost:{webhookPort}/webhook
-                    </code>
-                  </p>
-                  <p className="text-sm text-green-700 mt-1">
-                    Configure este URL na sua API WhatsApp para receber eventos.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="flex gap-3">
+          {/* Action Buttons */}
+          <div className="flex flex-col sm:flex-row gap-3">
             <button
-              type="submit"
-              className="bg-blue-500 hover:bg-blue-600 text-white font-medium px-6 py-2 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2"
-              disabled={isConfiguring || !webhookUrl.trim()}
+              onClick={saveWebhookConfig}
+              disabled={isLoading}
+              className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-blue-500 text-white rounded-lg font-medium transition-all duration-200 hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isConfiguring ? (
+              {isLoading ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  Configurando...
+                  Salvando...
                 </>
               ) : (
-                <>🔧 Configurar Webhook</>
+                "Salvar Configuração"
               )}
             </button>
 
             <button
-              type="button"
-              className="bg-gray-500 hover:bg-gray-600 text-white font-medium px-6 py-2 rounded-lg transition-colors disabled:bg-gray-400"
-              onClick={() => apiService.testWebhook(webhookUrl)}
-              disabled={isConfiguring || !webhookUrl.trim()}
+              onClick={testWebhook}
+              disabled={isTestLoading || !webhookUrl.trim()}
+              className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-green-500 text-white rounded-lg font-medium transition-all duration-200 hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              🧪 Testar
-            </button>
-          </div>
-        </form>
-      </div>
-
-      {/* Lista de Eventos Recebidos */}
-      <div className="bg-white border border-gray-200 rounded-lg">
-        <div className="flex justify-between items-center p-4 border-b border-gray-200">
-          <h4 className="text-lg font-semibold text-gray-800">
-            📋 Eventos Recebidos ({receivedEvents.length})
-          </h4>
-
-          <div className="flex gap-2">
-            <button
-              className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm transition-colors disabled:bg-gray-400"
-              onClick={clearEvents}
-              disabled={receivedEvents.length === 0}
-            >
-              🗑️ Limpar
-            </button>
-            <button
-              className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-sm transition-colors"
-              onClick={checkForNewEvents}
-            >
-              🔄 Atualizar
+              {isTestLoading ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  Testando...
+                </>
+              ) : (
+                "Testar Webhook"
+              )}
             </button>
           </div>
         </div>
+      </div>
 
-        <div className="max-h-96 overflow-y-auto custom-scrollbar">
-          {receivedEvents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center p-8 text-gray-500">
-              <div className="text-4xl mb-4">📭</div>
-              <p className="text-lg font-medium mb-2">
-                Nenhum evento recebido ainda
-              </p>
-              <p className="text-sm text-center">
-                Configure o webhook e aguarde os eventos da API
-              </p>
-            </div>
-          ) : (
-            <div className="p-4 space-y-4">
-              {receivedEvents.map((event) => (
+      {/* Event Types Configuration */}
+      <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">
+          Tipos de Eventos
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Object.entries(eventTypeLabels).map(([eventType, label]) => (
+            <label
+              key={eventType}
+              className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+            >
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  checked={eventTypes[eventType]}
+                  onChange={(e) =>
+                    handleEventTypeChange(eventType, e.target.checked)
+                  }
+                  className="sr-only"
+                />
                 <div
-                  key={event.id}
-                  className={`border rounded-lg p-4 transition-all hover:-translate-y-1 hover:shadow-md ${
-                    event.event === "qr_code"
-                      ? "border-l-4 border-l-purple-500"
-                      : event.event === "pairing_code"
-                      ? "border-l-4 border-l-orange-500"
-                      : event.event === "connection"
-                      ? "border-l-4 border-l-emerald-500"
-                      : event.event === "message"
-                      ? "border-l-4 border-l-cyan-500"
-                      : "border-l-4 border-l-gray-500"
+                  className={`w-4 h-4 border-2 rounded flex items-center justify-center transition-all duration-200 ${
+                    eventTypes[eventType]
+                      ? "bg-blue-500 border-blue-500"
+                      : "border-gray-300"
                   }`}
                 >
-                  <div className="flex justify-between items-center mb-3">
-                    <div className="flex items-center gap-3">
-                      <span className="bg-blue-500 text-white px-2 py-1 rounded text-xs font-medium uppercase">
-                        {event.event}
-                      </span>
-                      <span className="text-sm text-gray-600">
-                        Tenant: {event.tenantId}
-                      </span>
-                    </div>
-                    <span className="text-xs text-gray-500">
-                      {new Date(event.timestamp).toLocaleString("pt-BR")}
-                    </span>
-                  </div>
-
-                  <div>
-                    {event.event === "qr_code" && event.data.qrCode && (
-                      <div className="flex items-center gap-4 bg-white p-3 rounded border mb-2">
-                        <img
-                          src={event.data.qrCode}
-                          alt="QR Code"
-                          className="w-16 h-16 border rounded"
-                        />
-                        <span className="text-green-600 font-medium">
-                          QR Code recebido!
-                        </span>
-                      </div>
-                    )}
-
-                    <details className="mt-2">
-                      <summary className="cursor-pointer font-medium text-blue-600 hover:text-blue-800 py-2">
-                        Ver dados completos
-                      </summary>
-                      <pre className="bg-gray-50 border rounded p-3 text-xs font-mono max-h-48 overflow-y-auto text-gray-800 mt-2">
-                        {formatEventData(event)}
-                      </pre>
-                    </details>
-                  </div>
+                  {eventTypes[eventType] && (
+                    <span className="text-white text-xs font-bold">✓</span>
+                  )}
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+              <span className="text-sm font-medium text-gray-700">{label}</span>
+            </label>
+          ))}
         </div>
       </div>
 
-      {/* Instruções */}
-      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-        <h4 className="text-lg font-semibold text-yellow-800 mb-3">
-          📖 Como Configurar
-        </h4>
-        <ol className="text-sm text-yellow-700 space-y-2 list-decimal list-inside">
-          <li>
-            <strong>URL Pública:</strong> Use serviços como ngrok, localtunnel
-            ou deploy em nuvem
-          </li>
-          <li>
-            <strong>Configurar na API:</strong> Configure esta URL no tenant da
-            sua API WhatsApp
-          </li>
-          <li>
-            <strong>Eventos Suportados:</strong> qr_code, pairing_code, message,
-            connection, etc.
-          </li>
-          <li>
-            <strong>Teste:</strong> Use o botão "Testar" para verificar se o
-            webhook está funcionando
-          </li>
-        </ol>
-
-        <div className="bg-white border border-yellow-300 rounded p-3 mt-4">
-          <h5 className="font-semibold text-yellow-800 mb-2">
-            💡 Exemplo com ngrok:
-          </h5>
-          <code className="text-sm text-gray-800 block">
-            # Terminal 1: Iniciar servidor local
-            <br />
-            npm start
-            <br />
-            <br />
-            # Terminal 2: Expor webhook publicamente
-            <br />
-            ngrok http {webhookPort}
-            <br />
-            <br /># Use a URL gerada: https://abc123.ngrok.io/webhook
-          </code>
+      {/* Test Result */}
+      {testResult && (
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            Resultado do Teste
+          </h3>
+          <div
+            className={`p-4 rounded-lg border-l-4 ${
+              testResult.success
+                ? "bg-green-50 border-green-500 text-green-800"
+                : "bg-red-50 border-red-500 text-red-800"
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <span className="text-lg">
+                {testResult.success ? "✅" : "❌"}
+              </span>
+              <div className="flex-1">
+                <p className="font-medium">{testResult.message}</p>
+                {testResult.statusCode && (
+                  <p className="text-sm mt-1">
+                    Status Code: {testResult.statusCode}
+                  </p>
+                )}
+                {testResult.responseTime && (
+                  <p className="text-sm">
+                    Tempo de Resposta: {testResult.responseTime}ms
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
+      )}
+
+      {/* Webhook Logs */}
+      <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900">
+            Logs Recentes ({webhookLogs.length})
+          </h3>
+          {webhookLogs.length > 0 && (
+            <button
+              onClick={clearLogs}
+              className="px-3 py-1 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors"
+            >
+              Limpar Logs
+            </button>
+          )}
+        </div>
+
+        {webhookLogs.length === 0 ? (
+          <div className="text-center py-8 text-gray-500">
+            <div className="text-4xl mb-2">📝</div>
+            <p>Nenhum log encontrado</p>
+            <p className="text-sm">
+              Os logs aparecerão aqui quando os webhooks forem enviados
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {webhookLogs.map((log, index) => (
+              <div
+                key={index}
+                className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg"
+              >
+                <span className="text-lg">{getStatusIcon(log.status)}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-gray-900 text-sm">
+                      {log.event}
+                    </span>
+                    <span className="text-xs text-gray-500 whitespace-nowrap">
+                      {formatTimestamp(log.timestamp)}
+                    </span>
+                  </div>
+                  {log.message && (
+                    <p className="text-sm text-gray-600 mt-1 truncate">
+                      {log.message}
+                    </p>
+                  )}
+                  {log.statusCode && (
+                    <span
+                      className={`inline-block px-2 py-1 text-xs rounded mt-1 ${
+                        log.statusCode >= 200 && log.statusCode < 300
+                          ? "bg-green-100 text-green-800"
+                          : "bg-red-100 text-red-800"
+                      }`}
+                    >
+                      {log.statusCode}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
